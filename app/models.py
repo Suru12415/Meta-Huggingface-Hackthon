@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------------------
 
 class ResetRequest(BaseModel):
-    task_id: int = Field(..., ge=1, le=3, description="Task to load (1=easy, 2=medium, 3=hard)")
+    task_id: int = Field(default=1, ge=1, le=3, description="Task to load (1=easy, 2=medium, 3=hard)")
     seed: int | None = Field(default=None, description="Random seed for reproducibility")
 
 
