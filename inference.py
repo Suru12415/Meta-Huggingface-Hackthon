@@ -1,21 +1,10 @@
 """
-inference.py — Sample agent loop for SciClean-Env.
-
-Demonstrates how an AI agent (here: a rule-based heuristic) interacts with
-the environment via HTTP. This is the script the competition judges will run.
-
-Usage:
-    python inference.py                  # runs all 3 tasks once
-    python inference.py --task 2         # run a single task
-    python inference.py --host http://localhost:8000
-
-The heuristic agent applies all safe cleaning operations it can detect, then
-calls "submit" to finalise. A real LLM agent would introspect the observation
-and choose actions dynamically.
+inference.py — Fixed agent loop for SciClean-Env.
 """
 from __future__ import annotations
 
 import argparse
+import statistics
 import sys
 import time
 
@@ -26,15 +15,29 @@ TIMEOUT = 30.0
 
 
 def post(client: httpx.Client, path: str, body: dict | None = None) -> dict:
-    resp = client.post(f"{BASE_URL}{path}", json=body or {}, timeout=TIMEOUT)
-    resp.raise_for_status()
-    return resp.json()
+    try:
+        resp = client.post(f"{BASE_URL}{path}", json=body or {}, timeout=TIMEOUT)
+        resp.raise_for_status()
+        return resp.json()
+    except httpx.HTTPStatusError as e:
+        print(f"[ERROR] HTTP {e.response.status_code} on POST {path}: {e}", file=sys.stderr)
+        sys.exit(1)
+    except httpx.RequestError as e:
+        print(f"[ERROR] Request failed on POST {path}: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def get(client: httpx.Client, path: str) -> dict:
-    resp = client.get(f"{BASE_URL}{path}", timeout=TIMEOUT)
-    resp.raise_for_status()
-    return resp.json()
+    try:
+        resp = client.get(f"{BASE_URL}{path}", timeout=TIMEOUT)
+        resp.raise_for_status()
+        return resp.json()
+    except httpx.HTTPStatusError as e:
+        print(f"[ERROR] HTTP {e.response.status_code} on GET {path}: {e}", file=sys.stderr)
+        sys.exit(1)
+    except httpx.RequestError as e:
+        print(f"[ERROR] Request failed on GET {path}: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -42,13 +45,6 @@ def get(client: httpx.Client, path: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def run_task1(client: httpx.Client, seed: int) -> float:
-    """
-    Task 1 strategy:
-      1. drop_duplicates
-      2. fill_null with 'mean' for all numeric columns
-      3. cast sample_id and cell_count to int
-      4. submit
-    """
     obs = post(client, "/reset", {"task_id": 1, "seed": seed})
     print(f"\n[Task 1] Reset. Dirty rows: {len(obs['dataframe'])}")
 
@@ -80,29 +76,18 @@ def run_task1(client: httpx.Client, seed: int) -> float:
 
 
 def run_task2(client: httpx.Client, seed: int) -> float:
-    """
-    Task 2 strategy:
-      1. rescale length_mm by 0.1 (fixes 10× unit error on affected rows)
-      2. For each row, if any numeric value is > 5× the column mean, flag it
-      3. Drop all flagged rows
-      4. submit
-    """
     obs = post(client, "/reset", {"task_id": 2, "seed": seed})
     df = obs["dataframe"]
     print(f"\n[Task 2] Reset. Rows: {len(df)}")
 
     total_reward = 0.0
 
-    # Rescale the length column to fix the unit problem
+    # Step 1: Rescale length_mm
     r = post(client, "/step", {"action": {"action": "rescale_column", "column": "length_mm", "factor": 0.1}})
     total_reward += r["reward"]
     print(f"  rescale_column(length_mm, 0.1)  reward={r['reward']:.4f}")
 
-    # Refresh observation
-    obs = post(client, "/reset", {"task_id": 2, "seed": seed})
-
-    # Detect outlier rows heuristically (value > 5× std above mean)
-    import statistics
+    # ✅ FIX: Use original df from reset — DO NOT call /reset again after steps!
     numeric_cols = ["tensile_strength_mpa", "yield_point_mpa", "elongation_pct"]
 
     col_stats: dict[str, tuple[float, float]] = {}
@@ -139,43 +124,39 @@ def run_task2(client: httpx.Client, seed: int) -> float:
 
 
 def run_task3(client: httpx.Client, seed: int) -> float:
-    """
-    Task 3 strategy:
-      1. Rename mismatched columns in B
-      2. Drop junk rows (patient_id < 1)
-      3. Flag contradictions (negative bp_systolic)
-      4. merge_datasets
-      5. submit
-    """
     obs = post(client, "/reset", {"task_id": 3, "seed": seed})
+    dataset_b = obs['aux'].get('dataset_B', [])
     print(f"\n[Task 3] Reset. Dataset A rows: {len(obs['dataframe'])}, "
-          f"Dataset B rows: {len(obs['aux'].get('dataset_B', []))}")
+          f"Dataset B rows: {len(dataset_b)}")
 
     total_reward = 0.0
-    actions = [
-        # Fix column names in B
-        {"action": "rename_column", "dataset": "B", "old": "patient_id", "new": "subject_id"},
-        {"action": "rename_column", "dataset": "B", "old": "temp_celsius", "new": "body_temp_c"},
-        {"action": "rename_column", "dataset": "B", "old": "bp_systolic", "new": "systolic_bp_mmhg"},
+    rename_actions = [
+        {"action": "rename_column", "dataset": "B", "old": "patient_id",   "new": "subject_id"},
+        {"action": "rename_column", "dataset": "B", "old": "temp_celsius",  "new": "body_temp_c"},
+        {"action": "rename_column", "dataset": "B", "old": "bp_systolic",  "new": "systolic_bp_mmhg"},
     ]
 
-    for action in actions:
+    for action in rename_actions:
         r = post(client, "/step", {"action": action})
         total_reward += r["reward"]
         print(f"  {action['action']}  {action.get('old','')} -> {action.get('new','')}  reward={r['reward']:.4f}")
 
-    # Drop junk rows (patient_id was -1 → after rename subject_id, they have subject_id=-1)
-    # Junk rows are the last 5 in B; indices 80-84
-    for row_id in [84, 83, 82, 81, 80]:
+    # ✅ FIX: Detect junk rows dynamically instead of hardcoding [80-84]
+    junk_row_ids = []
+    for i, row in enumerate(dataset_b):
+        pid = row.get("patient_id") or row.get("subject_id")
+        if pid is not None and pid < 1:
+            junk_row_ids.append(i)
+
+    print(f"  Dropping {len(junk_row_ids)} junk rows: {junk_row_ids}")
+    for row_id in sorted(junk_row_ids, reverse=True):
         r = post(client, "/step", {"action": {"action": "drop_row", "dataset": "B", "row_id": row_id}})
         total_reward += r["reward"]
 
-    # Merge
     r = post(client, "/step", {"action": {"action": "merge_datasets"}})
     total_reward += r["reward"]
     print(f"  merge_datasets  reward={r['reward']:.4f}  info={r['info']}")
 
-    # Submit
     r = post(client, "/step", {"action": {"action": "submit"}})
     total_reward += r["reward"]
     print(f"  submit  reward={r['reward']:.4f}  final_score={r['info'].get('final_score', '?')}")
@@ -197,18 +178,16 @@ def main() -> None:
     args = parser.parse_args()
 
     BASE_URL = args.host.rstrip("/")
-
     tasks_to_run = [args.task] if args.task else [1, 2, 3]
     task_runners = {1: run_task1, 2: run_task2, 3: run_task3}
 
-    # Wait for server to be ready
     with httpx.Client() as client:
         for attempt in range(30):
             try:
                 resp = client.get(f"{BASE_URL}/health", timeout=5)
                 if resp.status_code == 200:
                     break
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
             print(f"Waiting for server... ({attempt + 1}/30)", end="\r", flush=True)
             time.sleep(2)
@@ -220,8 +199,13 @@ def main() -> None:
 
         totals: dict[int, float] = {}
         for task_id in tasks_to_run:
-            reward = task_runners[task_id](client, seed=args.seed)
-            totals[task_id] = reward
+            try:
+                reward = task_runners[task_id](client, seed=args.seed)
+                totals[task_id] = reward
+            except Exception as e:
+                print(f"[ERROR] Task {task_id} failed: {e}", file=sys.stderr)
+                sys.exit(1)
+
             state = get(client, "/state")
             print(f"  -> Final state: {state}")
 
