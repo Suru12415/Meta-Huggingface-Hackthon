@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
-server = "app.main:app"
+server = "server.app:main"
 
 [project.urls]
 Homepage = "https://huggingface.co/spaces/Suru3458A/MetaXScalar"
