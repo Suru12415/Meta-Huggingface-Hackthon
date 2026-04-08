@@ -17,6 +17,6 @@ COPY . .
 # Pre-generate datasets at build time so the container starts fast
 RUN python -m app.data_gen.generate_datasets
 
-EXPOSE 8000
+EXPOSE 7860
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "7860"]
