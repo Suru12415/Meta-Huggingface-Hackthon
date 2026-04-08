@@ -55,6 +55,10 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+@app.get("/", tags=["meta"])
+async def root() -> dict:
+    return {"status": "ok", "name": "SciClean-Env", "version": "1.0.0"}
+
 
 @app.get("/health", tags=["meta"])
 async def health() -> dict:
