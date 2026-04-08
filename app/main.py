@@ -64,6 +64,8 @@ async def health() -> dict:
 
 @app.post("/reset", response_model=Observation, tags=["environment"])
 async def reset(body: ResetRequest) -> Observation:
+    if body is None:
+        body = ResetRequest(task_id=1, seed=42)
     """
     Start a new episode.
 
