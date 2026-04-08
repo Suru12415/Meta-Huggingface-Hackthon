@@ -2,11 +2,6 @@
 app/main.py — FastAPI server exposing the SciCleanEnv as HTTP endpoints.
 """
 
-def main():
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=7860)
-
-
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -27,6 +22,11 @@ from app.models import (
 # Global environment instance
 # ---------------------------------------------------------------------------
 env = SciCleanEnv()
+
+def main():
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=7860)
+
 
 
 @asynccontextmanager
