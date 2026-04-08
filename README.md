@@ -1,3 +1,13 @@
+---
+title: SciClean-Env
+emoji: 🧪
+colorFrom: purple
+colorTo: blue
+sdk: docker
+pinned: false
+---
+
+
 # SciClean-Env 🧪
 
 > **A Reinforcement-Learning Environment for Scientific Data Cleaning**
