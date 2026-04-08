@@ -57,7 +57,7 @@ def generate_all(seed: int = 42) -> None:
         f"merged_clean={t3['clean_merged'].shape}"
     )
 
-    print(f"\n✓ All datasets written to: {DATA_DIR.resolve()}")
+    print(f"\n[OK] All datasets written to: {DATA_DIR.resolve()}")
 
 
 # Auto-run when imported for the first time (idempotent - skip if files exist)
