@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.env import SciCleanEnv
@@ -63,9 +63,18 @@ async def health() -> dict:
 
 
 @app.post("/reset", response_model=Observation, tags=["environment"])
-async def reset(body: ResetRequest) -> Observation:
-    if body is None:
-        body = ResetRequest(task_id=1, seed=42)
+async def reset(body: Request) -> Observation:
+    try:
+        data = await body.json()
+    except Exception:
+        data = {}
+    task_id = data.get("task_id", 1)
+    seed = data.get("seed", 42)
+    try:
+        obs = env.reset(task_id=task_id, seed=seed)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return obs 
     """
     Start a new episode.
 
