@@ -1,220 +1,230 @@
 """
-inference.py — Fixed agent loop for SciClean-Env.
+inference.py — SciClean-Env agent (OpenEnv RL Hackathon compliant)
 """
 from __future__ import annotations
 
-import argparse
+import os
 import statistics
 import sys
 import time
 
 import httpx
+from openai import OpenAI
 
-BASE_URL = "http://localhost:8000"
+# ── Required env vars (as per guidelines) ────────────────────────────────────
+API_BASE_URL = os.getenv("API_BASE_URL", "https://api-inference.huggingface.co/v1")
+MODEL_NAME   = os.getenv("MODEL_NAME",   "meta-llama/Llama-3.3-70B-Instruct")
+HF_TOKEN     = os.getenv("HF_TOKEN")
+
+if HF_TOKEN is None:
+    raise ValueError("HF_TOKEN environment variable is required")
+
+# ── OpenAI client ─────────────────────────────────────────────────────────────
+client = OpenAI(
+    base_url=API_BASE_URL,
+    api_key=HF_TOKEN,
+)
+
+ENV_BASE_URL = "http://localhost:7860"
 TIMEOUT = 30.0
 
+# ── Structured log helpers ────────────────────────────────────────────────────
+def log_start(task_name: str, env: str, model: str):
+    print(f"[START] task={task_name} env={env} model={model}", flush=True)
 
-def post(client: httpx.Client, path: str, body: dict | None = None) -> dict:
+def log_step(step: int, action: str, reward: float, done: bool, error: str | None):
+    err = error if error else "null"
+    done_str = "true" if done else "false"
+    print(f"[STEP] step={step} action={action} reward={reward:.2f} done={done_str} error={err}", flush=True)
+
+def log_end(success: bool, steps: int, rewards: list[float]):
+    success_str = "true" if success else "false"
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(f"[END] success={success_str} steps={steps} rewards={rewards_str}", flush=True)
+
+
+# ── HTTP helpers ──────────────────────────────────────────────────────────────
+def post(http: httpx.Client, path: str, body: dict | None = None) -> dict:
     try:
-        resp = client.post(f"{BASE_URL}{path}", json=body or {}, timeout=TIMEOUT)
+        resp = http.post(f"{ENV_BASE_URL}{path}", json=body or {}, timeout=TIMEOUT)
         resp.raise_for_status()
         return resp.json()
-    except httpx.HTTPStatusError as e:
-        print(f"[ERROR] HTTP {e.response.status_code} on POST {path}: {e}", file=sys.stderr)
-        sys.exit(1)
-    except httpx.RequestError as e:
-        print(f"[ERROR] Request failed on POST {path}: {e}", file=sys.stderr)
-        sys.exit(1)
+    except Exception as e:
+        print(f"[ERROR] POST {path}: {e}", file=sys.stderr)
+        raise
 
-
-def get(client: httpx.Client, path: str) -> dict:
+def get_req(http: httpx.Client, path: str) -> dict:
     try:
-        resp = client.get(f"{BASE_URL}{path}", timeout=TIMEOUT)
+        resp = http.get(f"{ENV_BASE_URL}{path}", timeout=TIMEOUT)
         resp.raise_for_status()
         return resp.json()
-    except httpx.HTTPStatusError as e:
-        print(f"[ERROR] HTTP {e.response.status_code} on GET {path}: {e}", file=sys.stderr)
-        sys.exit(1)
-    except httpx.RequestError as e:
-        print(f"[ERROR] Request failed on GET {path}: {e}", file=sys.stderr)
-        sys.exit(1)
+    except Exception as e:
+        print(f"[ERROR] GET {path}: {e}", file=sys.stderr)
+        raise
 
 
-# ---------------------------------------------------------------------------
-# Per-task heuristic strategies
-# ---------------------------------------------------------------------------
-
-def run_task1(client: httpx.Client, seed: int) -> float:
-    obs = post(client, "/reset", {"task_id": 1, "seed": seed})
-    print(f"\n[Task 1] Reset. Dirty rows: {len(obs['dataframe'])}")
-
-    actions = [
-        {"action": "drop_duplicates"},
-        {"action": "fill_null", "column": "temperature_c", "strategy": "mean"},
-        {"action": "fill_null", "column": "ph_level", "strategy": "mean"},
-        {"action": "fill_null", "column": "cell_count", "strategy": "median"},
-        {"action": "fill_null", "column": "incubation_hours", "strategy": "mode"},
-        {"action": "cast_column", "column": "sample_id", "dtype": "int"},
-        {"action": "cast_column", "column": "cell_count", "dtype": "int"},
-        {"action": "submit"},
-    ]
-
-    total_reward = 0.0
-    for action in actions:
-        result = post(client, "/step", {"action": action})
-        total_reward += result["reward"]
-        status = "[done]" if result["done"] else f"step {result['observation']['step']}"
-        print(
-            f"  {action['action']:20s}  reward={result['reward']:.4f}  "
-            f"cumulative={total_reward:.4f}  [{status}]"
-            + (f"  info={result['info']}" if result["info"] else "")
+# ── LLM call (uses OpenAI client as required) ─────────────────────────────────
+def ask_llm(prompt: str) -> str:
+    try:
+        resp = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=128,
         )
-        if result["done"]:
-            break
-
-    return total_reward
-
-
-def run_task2(client: httpx.Client, seed: int) -> float:
-    obs = post(client, "/reset", {"task_id": 2, "seed": seed})
-    df = obs["dataframe"]
-    print(f"\n[Task 2] Reset. Rows: {len(df)}")
-
-    total_reward = 0.0
-
-    # Step 1: Rescale length_mm
-    r = post(client, "/step", {"action": {"action": "rescale_column", "column": "length_mm", "factor": 0.1}})
-    total_reward += r["reward"]
-    print(f"  rescale_column(length_mm, 0.1)  reward={r['reward']:.4f}")
-
-    # ✅ FIX: Use original df from reset — DO NOT call /reset again after steps!
-    numeric_cols = ["tensile_strength_mpa", "yield_point_mpa", "elongation_pct"]
-
-    col_stats: dict[str, tuple[float, float]] = {}
-    for col in numeric_cols:
-        vals = [row[col] for row in df if row.get(col) is not None]
-        if vals:
-            mean = statistics.mean(vals)
-            stdev = statistics.stdev(vals) if len(vals) > 1 else 0
-            col_stats[col] = (mean, stdev)
-
-    outlier_row_ids = []
-    for i, row in enumerate(df):
-        for col, (mean, stdev) in col_stats.items():
-            val = row.get(col)
-            if val is not None and stdev > 0 and abs(val - mean) > 5 * stdev:
-                outlier_row_ids.append(i)
-                break
-
-    print(f"  Detected {len(outlier_row_ids)} outlier rows: {outlier_row_ids[:10]}")
-
-    for row_id in outlier_row_ids:
-        r = post(client, "/step", {"action": {"action": "flag_outlier", "row_id": row_id}})
-        total_reward += r["reward"]
-
-    for row_id in sorted(outlier_row_ids, reverse=True):
-        r = post(client, "/step", {"action": {"action": "drop_row", "row_id": row_id}})
-        total_reward += r["reward"]
-
-    r = post(client, "/step", {"action": {"action": "submit"}})
-    total_reward += r["reward"]
-    print(f"  submit  reward={r['reward']:.4f}  final_score={r['info'].get('final_score', '?')}")
-
-    return total_reward
+        return resp.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"[WARN] LLM call failed: {e}", file=sys.stderr)
+        return ""
 
 
-def run_task3(client: httpx.Client, seed: int) -> float:
-    obs = post(client, "/reset", {"task_id": 3, "seed": seed})
-    dataset_b = obs['aux'].get('dataset_B', [])
-    print(f"\n[Task 3] Reset. Dataset A rows: {len(obs['dataframe'])}, "
-          f"Dataset B rows: {len(dataset_b)}")
+# ── Task runners ──────────────────────────────────────────────────────────────
+def run_task(http: httpx.Client, task_id: int, seed: int = 42) -> tuple[bool, list[float]]:
+    task_names = {1: "basic-hygiene", 2: "outlier-detection", 3: "cross-experiment"}
+    task_name  = task_names[task_id]
 
-    total_reward = 0.0
-    rename_actions = [
-        {"action": "rename_column", "dataset": "B", "old": "patient_id",   "new": "subject_id"},
-        {"action": "rename_column", "dataset": "B", "old": "temp_celsius",  "new": "body_temp_c"},
-        {"action": "rename_column", "dataset": "B", "old": "bp_systolic",  "new": "systolic_bp_mmhg"},
-    ]
+    log_start(task_name, "SciClean-Env", MODEL_NAME)
 
-    for action in rename_actions:
-        r = post(client, "/step", {"action": action})
-        total_reward += r["reward"]
-        print(f"  {action['action']}  {action.get('old','')} -> {action.get('new','')}  reward={r['reward']:.4f}")
+    obs = post(http, "/reset", {"task_id": task_id, "seed": seed})
 
-    # ✅ FIX: Detect junk rows dynamically instead of hardcoding [80-84]
-    junk_row_ids = []
-    for i, row in enumerate(dataset_b):
-        pid = row.get("patient_id") or row.get("subject_id")
-        if pid is not None and pid < 1:
-            junk_row_ids.append(i)
+    rewards: list[float] = []
+    step = 0
+    success = False
 
-    print(f"  Dropping {len(junk_row_ids)} junk rows: {junk_row_ids}")
-    for row_id in sorted(junk_row_ids, reverse=True):
-        r = post(client, "/step", {"action": {"action": "drop_row", "dataset": "B", "row_id": row_id}})
-        total_reward += r["reward"]
+    try:
+        if task_id == 1:
+            actions = [
+                {"action": "drop_duplicates"},
+                {"action": "fill_null", "column": "temperature_c",    "strategy": "mean"},
+                {"action": "fill_null", "column": "ph_level",         "strategy": "mean"},
+                {"action": "fill_null", "column": "cell_count",       "strategy": "median"},
+                {"action": "fill_null", "column": "incubation_hours", "strategy": "mode"},
+                {"action": "cast_column", "column": "sample_id",  "dtype": "int"},
+                {"action": "cast_column", "column": "cell_count", "dtype": "int"},
+                {"action": "submit"},
+            ]
+            for action in actions:
+                step += 1
+                result = post(http, "/step", {"action": action})
+                r = result["reward"]
+                rewards.append(r)
+                done = result["done"]
+                err = result.get("info", {}).get("error") if isinstance(result.get("info"), dict) else None
+                log_step(step, action["action"], r, done, err)
+                if done:
+                    success = True
+                    break
 
-    r = post(client, "/step", {"action": {"action": "merge_datasets"}})
-    total_reward += r["reward"]
-    print(f"  merge_datasets  reward={r['reward']:.4f}  info={r['info']}")
+        elif task_id == 2:
+            df = obs["dataframe"]
 
-    r = post(client, "/step", {"action": {"action": "submit"}})
-    total_reward += r["reward"]
-    print(f"  submit  reward={r['reward']:.4f}  final_score={r['info'].get('final_score', '?')}")
+            # Rescale
+            step += 1
+            result = post(http, "/step", {"action": {"action": "rescale_column", "column": "length_mm", "factor": 0.1}})
+            rewards.append(result["reward"])
+            log_step(step, "rescale_column(length_mm,0.1)", result["reward"], result["done"], None)
 
-    return total_reward
+            # Detect outliers
+            numeric_cols = ["tensile_strength_mpa", "yield_point_mpa", "elongation_pct"]
+            col_stats: dict[str, tuple[float, float]] = {}
+            for col in numeric_cols:
+                vals = [row[col] for row in df if row.get(col) is not None]
+                if vals:
+                    m = statistics.mean(vals)
+                    s = statistics.stdev(vals) if len(vals) > 1 else 0
+                    col_stats[col] = (m, s)
+
+            outlier_ids = []
+            for i, row in enumerate(df):
+                for col, (m, s) in col_stats.items():
+                    v = row.get(col)
+                    if v is not None and s > 0 and abs(v - m) > 5 * s:
+                        outlier_ids.append(i)
+                        break
+
+            for row_id in outlier_ids:
+                step += 1
+                result = post(http, "/step", {"action": {"action": "flag_outlier", "row_id": row_id}})
+                rewards.append(result["reward"])
+                log_step(step, f"flag_outlier({row_id})", result["reward"], result["done"], None)
+
+            for row_id in sorted(outlier_ids, reverse=True):
+                step += 1
+                result = post(http, "/step", {"action": {"action": "drop_row", "row_id": row_id}})
+                rewards.append(result["reward"])
+                log_step(step, f"drop_row({row_id})", result["reward"], result["done"], None)
+
+            step += 1
+            result = post(http, "/step", {"action": {"action": "submit"}})
+            rewards.append(result["reward"])
+            log_step(step, "submit", result["reward"], result["done"], None)
+            success = result["done"]
+
+        elif task_id == 3:
+            dataset_b = obs["aux"].get("dataset_B", [])
+
+            renames = [
+                {"action": "rename_column", "dataset": "B", "old": "patient_id",  "new": "subject_id"},
+                {"action": "rename_column", "dataset": "B", "old": "temp_celsius", "new": "body_temp_c"},
+                {"action": "rename_column", "dataset": "B", "old": "bp_systolic", "new": "systolic_bp_mmhg"},
+            ]
+            for action in renames:
+                step += 1
+                result = post(http, "/step", {"action": action})
+                rewards.append(result["reward"])
+                log_step(step, f"rename_column({action['old']}->{action['new']})", result["reward"], result["done"], None)
+
+            junk_ids = [i for i, row in enumerate(dataset_b)
+                        if (row.get("patient_id") or row.get("subject_id") or 1) < 1]
+            for row_id in sorted(junk_ids, reverse=True):
+                step += 1
+                result = post(http, "/step", {"action": {"action": "drop_row", "dataset": "B", "row_id": row_id}})
+                rewards.append(result["reward"])
+                log_step(step, f"drop_row(B,{row_id})", result["reward"], result["done"], None)
+
+            step += 1
+            result = post(http, "/step", {"action": {"action": "merge_datasets"}})
+            rewards.append(result["reward"])
+            log_step(step, "merge_datasets", result["reward"], result["done"], None)
+
+            step += 1
+            result = post(http, "/step", {"action": {"action": "submit"}})
+            rewards.append(result["reward"])
+            log_step(step, "submit", result["reward"], result["done"], None)
+            success = result["done"]
+
+    except Exception as e:
+        print(f"[ERROR] Task {task_id} exception: {e}", file=sys.stderr)
+        log_end(False, step, rewards)
+        return False, rewards
+
+    log_end(success, step, rewards)
+    return success, rewards
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
+# ── Main ──────────────────────────────────────────────────────────────────────
 def main() -> None:
-    global BASE_URL
-
-    parser = argparse.ArgumentParser(description="SciClean-Env sample inference agent")
-    parser.add_argument("--host", default=BASE_URL, help="Base URL of the environment server")
-    parser.add_argument("--task", type=int, choices=[1, 2, 3], help="Run only this task")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    args = parser.parse_args()
-
-    BASE_URL = args.host.rstrip("/")
-    tasks_to_run = [args.task] if args.task else [1, 2, 3]
-    task_runners = {1: run_task1, 2: run_task2, 3: run_task3}
-
-    with httpx.Client() as client:
+    with httpx.Client() as http:
         for attempt in range(30):
             try:
-                resp = client.get(f"{BASE_URL}/health", timeout=5)
+                resp = http.get(f"{ENV_BASE_URL}/health", timeout=5)
                 if resp.status_code == 200:
                     break
             except Exception:
                 pass
-            print(f"Waiting for server... ({attempt + 1}/30)", end="\r", flush=True)
+            print(f"Waiting for server... ({attempt+1}/30)", end="\r", flush=True)
             time.sleep(2)
         else:
-            print(f"\n[ERROR] Could not reach server at {BASE_URL}. Is it running?")
+            print(f"\n[ERROR] Server not reachable at {ENV_BASE_URL}")
             sys.exit(1)
 
-        print(f"[OK] Connected to {BASE_URL}")
+        print(f"[OK] Connected to {ENV_BASE_URL}", flush=True)
 
-        totals: dict[int, float] = {}
-        for task_id in tasks_to_run:
+        for task_id in [1, 2, 3]:
             try:
-                reward = task_runners[task_id](client, seed=args.seed)
-                totals[task_id] = reward
+                run_task(http, task_id, seed=42)
             except Exception as e:
                 print(f"[ERROR] Task {task_id} failed: {e}", file=sys.stderr)
                 sys.exit(1)
-
-            state = get(client, "/state")
-            print(f"  -> Final state: {state}")
-
-    print("\n" + "=" * 55)
-    print("  INFERENCE SUMMARY")
-    print("=" * 55)
-    for tid, r in totals.items():
-        print(f"  Task {tid}: cumulative reward = {r:.4f}")
-    print("=" * 55)
 
 
 if __name__ == "__main__":
