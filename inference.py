@@ -12,11 +12,13 @@ import httpx
 from openai import OpenAI
 
 # ── Required env vars (as per guidelines) ────────────────────────────────────
-API_BASE_URL = os.getenv("API_BASE_URL", "https://api-inference.huggingface.co/v1")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME   = os.getenv("MODEL_NAME",   "meta-llama/Llama-3.3-70B-Instruct")
 HF_TOKEN     = os.getenv("HF_TOKEN")
 
 if HF_TOKEN is None:
+
+
     raise ValueError("HF_TOKEN environment variable is required")
 
 # ── OpenAI client ─────────────────────────────────────────────────────────────
