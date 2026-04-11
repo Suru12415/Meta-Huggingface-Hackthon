@@ -333,25 +333,26 @@ class SciCleanEnv:
     def _grade(self) -> float:
         """Final score for the current episode state."""
         if self.task_id == 1:
-            return grader1.score(self.current_df, self.ground_truth_df)
+            s = grader1.score(self.current_df, self.ground_truth_df)
         elif self.task_id == 2:
-            return grader2.score(
+            s = grader2.score(
                 self.current_df, self.ground_truth_df,
                 self.flagged_outlier_ids, self.known_outlier_ids,
             )
         elif self.task_id == 3:
             if self.current_df_B is not None:
-                # Agent didn't merge — try an automatic merge
                 try:
                     merged = task3_crossvalidate.merge_datasets(
                         self.current_df, self.current_df_B
                     )
-                except Exception:  # noqa: BLE001
+                except Exception:
                     merged = self.current_df
             else:
                 merged = self.current_df
-            return grader3.score(merged, self.ground_truth_merged)
-        return 0.0
+            s = grader3.score(merged, self.ground_truth_merged)
+        else:
+            s = 0.0
+        return float(max(0.0001, min(0.9999, s)))
 
     def _build_obs(self) -> Observation:
         aux: dict[str, Any] = {}
