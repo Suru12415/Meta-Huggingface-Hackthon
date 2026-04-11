@@ -312,7 +312,7 @@ class SciCleanEnv:
                     self.current_df, self.current_df_B
                 )
                 # Score the merge quality
-                score = grader3.score(merged, self.ground_truth_merged)
+                score = float(max(0.0001, min(0.9999, grader3.score(merged, self.ground_truth_merged))))
                 self.current_df = merged
                 self.current_df_B = None  # consumed
                 info["merge_score"] = round(score, 4)
