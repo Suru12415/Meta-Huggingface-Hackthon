@@ -64,4 +64,4 @@ def score(
     # Shape penalty: penalise if agent produced far fewer rows than ground truth
     shape_factor = min(1.0, len(merged_df) / max(1, len(ground_truth_merged)))
 
-    return float(np.clip(round(mean_col_score * shape_factor, 4), 0.0001, 0.9999))
+    return float(max(0.0001, min(0.9999, round(mean_col_score * shape_factor, 4))))
