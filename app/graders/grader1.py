@@ -75,4 +75,5 @@ def score(agent_df: pd.DataFrame, ground_truth_df: pd.DataFrame) -> float:
 
         matching += int(both_nan.sum()) + int(within_tol.sum())
 
-    return round(matching / total_cells, 4)
+    return float(np.clip(round(matching / total_cells, 4), 0.0001, 0.9999))
+
