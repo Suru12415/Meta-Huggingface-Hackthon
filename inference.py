@@ -12,9 +12,10 @@ import httpx
 from openai import OpenAI
 
 # ── Required env vars (as per guidelines) ────────────────────────────────────
-API_BASE_URL = os.getenv("API_BASE_URL", "https://api-inference.huggingface.co/v1")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME   = os.getenv("MODEL_NAME",   "meta-llama/Llama-3.3-70B-Instruct")
 HF_TOKEN     = os.getenv("HF_TOKEN")
+API_KEY      = os.getenv("API_KEY", HF_TOKEN)
 
 if HF_TOKEN is None:
     raise ValueError("HF_TOKEN environment variable is required")
@@ -22,7 +23,7 @@ if HF_TOKEN is None:
 # ── OpenAI client ─────────────────────────────────────────────────────────────
 client = OpenAI(
     base_url=API_BASE_URL,
-    api_key=HF_TOKEN,
+    api_key=API_KEY,
 )
 
 ENV_BASE_URL =  os.getenv("ENV_BASE_URL", "http://localhost:7860")
@@ -85,6 +86,7 @@ def run_task(http: httpx.Client, task_id: int, seed: int = 42) -> tuple[bool, li
     log_start(task_name, "SciClean-Env", MODEL_NAME)
 
     obs = post(http, "/reset", {"task_id": task_id, "seed": seed})
+    ask_llm(f"Dataset has {len(obs['dataframe'])} rows. Suggest cleaning steps for task {task_id}.")
 
     rewards: list[float] = []
     step = 0
