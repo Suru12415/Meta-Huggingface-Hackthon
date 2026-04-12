@@ -33,4 +33,4 @@ def score(
     mean_col_score = float(np.mean(col_scores)) if col_scores else 0.0
     shape_factor = min(1.0, len(merged_df) / max(1, len(ground_truth_merged)))
     raw = round(mean_col_score * shape_factor, 4)
-    return float(max(1e-9, min(1 - 1e-9, float(score))))
+    return float(max(1e-9, min(1 - 1e-9, float(raw))))
