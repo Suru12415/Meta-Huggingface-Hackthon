@@ -48,4 +48,4 @@ def score(
     mae = mae_ratio(agent_df, ground_truth_df)
     mae_score = max(0.0, 1.0 - min(mae, 1.0))
     raw = round(0.5 * f1 + 0.5 * mae_score, 4)
-    return float(max(0.0001, min(0.9999, raw)))
+    return float(max(1e-9, min(1 - 1e-9, float(score))))

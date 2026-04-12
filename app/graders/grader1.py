@@ -39,4 +39,4 @@ def score(agent_df: pd.DataFrame, ground_truth_df: pd.DataFrame) -> float:
         )
         matching += int(both_nan.sum()) + int(within_tol.sum())
     raw = round(matching / total_cells, 4)
-    return float(max(0.0001, min(0.9999, raw)))
+    return float(max(1e-9, min(1 - 1e-9, float(score))))
