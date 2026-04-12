@@ -104,11 +104,13 @@ def _make_task3_data(seed: int) -> tuple[list[dict], list[dict]]:
 
 # ── /reset ───────────────────────────────────────────────────────────────
 class ResetRequest(BaseModel):
-    task_id: int
+    task_id: int = 1   # ✅ default so empty body works
     seed: int = 42
 
 @app.post("/reset")
-def reset(req: ResetRequest):
+def reset(req: ResetRequest = None):
+    if req is None:
+        req = ResetRequest()
     _state.clear()
     _state["task_id"] = req.task_id
     _state["seed"]    = req.seed
